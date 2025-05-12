@@ -58,7 +58,7 @@ namespace LOLConfigCloud
     }
     public partial class MainWindow : Window
     {
-        private const string ServerUrl = "https://lolcfg.kdrnn.online/upload.php";
+        private const string ServerUrl = "https://78.abc.com/upload.php";
         private const string BackupExtension = ".lolcfgbak";
         private string _gameConfigDir;
         private List<CloudFileInfo> _cloudFiles = new List<CloudFileInfo>();
