@@ -10,12 +10,55 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Windows.Input;
+using System.Diagnostics;
+using System.Security.Principal;
 
 namespace LOLConfigCloud
 {
+
+
+    public partial class App : Application
+    {
+        protected override void OnStartup(StartupEventArgs e)
+        {
+            // 管理员权限
+            if (!IsAdministrator())
+            {
+                // 请求提升权限
+                var processInfo = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName)
+                {
+                    Verb = "runas",
+                    UseShellExecute = true
+                };
+
+                try
+                {
+                    Process.Start(processInfo);
+                    Current.Shutdown();
+                    return;
+                }
+                catch
+                {
+                    MessageBox.Show("需要管理员权限才能正常运行本程序");
+                    Current.Shutdown();
+                    return;
+                }
+            }
+
+            base.OnStartup(e);
+        }
+
+        private static bool IsAdministrator()
+        {
+            var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+    }
     public partial class MainWindow : Window
     {
-        private const string ServerUrl = "https://xxx.xxx.xxx/upload.php";
+        private const string ServerUrl = "https://lolcfg.kdrnn.online/upload.php";
         private const string BackupExtension = ".lolcfgbak";
         private string _gameConfigDir;
         private List<CloudFileInfo> _cloudFiles = new List<CloudFileInfo>();
@@ -27,14 +70,38 @@ namespace LOLConfigCloud
             InitializeComponent();
             Loaded += MainWindow_Loaded;
 
-            // Setup timer to periodically check for game directory
-            _refreshTimer = new DispatcherTimer
+            this.MouseLeftButtonDown += (s, e) =>
             {
-                Interval = TimeSpan.FromSeconds(5)
+                if (e.LeftButton == MouseButtonState.Pressed)
+                {
+                    this.DragMove();
+                }
             };
-            _refreshTimer.Tick += RefreshTimer_Tick;
-            _refreshTimer.Start();
+            //每秒三状态刷新
+            var timer = new DispatcherTimer
+            {
+                Interval = System.TimeSpan.FromSeconds(1)
+            };
+            timer.Tick += (s, e) => {
+                _gameConfigDir = GetGameConfigDirectory();
+                RefreshFileStatus();
+                RefreshCloudFileList();
+            };
+            timer.Start();
         }
+
+    
+
+        private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = WindowState.Minimized;
+        }
+
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.Close();
+        }
+
 
         private void RefreshTimer_Tick(object sender, EventArgs e)
         {
@@ -155,11 +222,11 @@ namespace LOLConfigCloud
                         _cloudFiles = files;
                         DgCloudFiles.ItemsSource = _cloudFiles;
                     }
-                    else
-                    {
-                        string error = await response.Content.ReadAsStringAsync();
-                        MessageBox.Show($"获取云端文件列表失败: {error}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
+                    //else
+                    //{
+                    //    string error = await response.Content.ReadAsStringAsync();//与每秒三刷冲突
+                    //    MessageBox.Show($"获取云端文件列表失败: {error}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    //}
                 }
             }
             catch (Exception ex)
@@ -217,11 +284,11 @@ namespace LOLConfigCloud
                         }
                     }
 
-                    if (anyUploaded)
-                    {
-                        MessageBox.Show("上传操作完成", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                        RefreshCloudFileList();
-                    }
+                    //if (anyUploaded)//上传提示消息，看喜好启用
+                    //{
+                    //    MessageBox.Show("上传操作完成", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    //    RefreshCloudFileList();
+                    //}
                 }
             }
             catch (Exception ex)
@@ -246,108 +313,148 @@ namespace LOLConfigCloud
                     MessageBox.Show("未找到游戏配置目录", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
+                // 1. 创建时间戳备份文件夹
+                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string backupDir = Path.Combine(_gameConfigDir, $"Backup_{timestamp}");
+                Directory.CreateDirectory(backupDir);
 
-                // 1. Backup existing files
-                Dictionary<string, string> backupFiles = new Dictionary<string, string>();
-                bool backupSuccess = true;
-
+                // 2. 移动所有配置文件到备份文件夹
+                bool moveSuccess = true;
                 foreach (var fileName in _configFiles)
                 {
-                    string originalPath = Path.Combine(_gameConfigDir, fileName);
-                    string backupPath = originalPath + BackupExtension;
+                    string sourcePath = Path.Combine(_gameConfigDir, fileName);
+                    string destPath = Path.Combine(backupDir, fileName);
 
-                    if (File.Exists(originalPath))
+                    try
                     {
-                        try
+                        if (File.Exists(sourcePath))
                         {
-                            if (File.Exists(backupPath))
-                            {
-                                File.Delete(backupPath);
-                            }
-                            File.Move(originalPath, backupPath);
-                            backupFiles.Add(originalPath, backupPath);
+                            File.Move(sourcePath, destPath);
                         }
-                        catch (Exception ex)
-                        {
-                            backupSuccess = false;
-                            MessageBox.Show($"备份文件 {fileName} 失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                            break;
-                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        moveSuccess = false;
+                        MessageBox.Show($"移动文件 {fileName} 到备份文件夹失败: {ex.Message}",
+                                      "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                        break;
                     }
                 }
 
-                if (!backupSuccess)
+                if (!moveSuccess)
                 {
-                    RestoreBackups(backupFiles);
+                    // 尝试恢复已移动的文件
+                    try
+                    {
+                        foreach (var fileName in _configFiles)
+                        {
+                            string sourcePath = Path.Combine(_gameConfigDir, fileName);
+                            string destPath = Path.Combine(backupDir, fileName);
+
+                            if (File.Exists(destPath))
+                            {
+                                File.Move(destPath, sourcePath);
+                            }
+                        }
+                        Directory.Delete(backupDir);
+                    }
+                    catch { }
                     return;
                 }
 
-                // 2. Download files
+                // 3. 下载新配置文件
                 bool downloadSuccess = true;
                 using (var client = new HttpClient())
                 {
                     client.DefaultRequestHeaders.Add("User-Agent", "LOLConfigCloud");
+                    client.Timeout = TimeSpan.FromSeconds(30);
 
                     foreach (var fileName in _configFiles)
                     {
-                        string originalPath = Path.Combine(_gameConfigDir, fileName);
+                        string filePath = Path.Combine(_gameConfigDir, fileName);
                         try
                         {
                             var response = await client.GetAsync($"{ServerUrl}?key={apiKey}&file={fileName}");
 
                             if (response.IsSuccessStatusCode)
                             {
-                                using (var fileStream = File.Create(originalPath))
+                                // 确保目录存在
+                                Directory.CreateDirectory(Path.GetDirectoryName(filePath));
+
+                                // 使用临时文件  确保原子性写入
+                                string tempPath = filePath + ".tmp";
+                                using (var fileStream = File.Create(tempPath))
                                 {
                                     await response.Content.CopyToAsync(fileStream);
                                 }
+
+                                // 替换文件
+                                if (File.Exists(filePath)) File.Delete(filePath);
+                                File.Move(tempPath, filePath);
                             }
                             else
                             {
                                 downloadSuccess = false;
                                 string error = await response.Content.ReadAsStringAsync();
-                                MessageBox.Show($"下载 {fileName} 失败: {error}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                                MessageBox.Show($"下载 {fileName} 失败: {error}",
+                                              "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                                 break;
                             }
                         }
                         catch (Exception ex)
                         {
                             downloadSuccess = false;
-                            MessageBox.Show($"下载 {fileName} 失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                            MessageBox.Show($"下载 {fileName} 失败: {ex.Message}",
+                                          "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                             break;
                         }
                     }
                 }
 
-                // 3. Handle result
+                // 4. 处理结果
                 if (downloadSuccess)
                 {
-                    // Delete backups
-                    foreach (var backup in backupFiles.Values)
-                    {
-                        try
-                        {
-                            if (File.Exists(backup))
-                            {
-                                File.Delete(backup);
-                            }
-                        }
-                        catch { }
-                    }
-
-                    MessageBox.Show("所有配置文件下载成功！", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                    RefreshFileStatus();
+                    MessageBox.Show("所有配置文件下载成功！\n" +
+                                  $"原始文件已备份到: {backupDir}",
+                                  "提示", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 else
                 {
-                    // Restore backups
-                    RestoreBackups(backupFiles);
-                    MessageBox.Show("下载失败，已恢复原始文件", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    // 下载失败就恢复备份
+                    try
+                    {
+                        foreach (var fileName in _configFiles)
+                        {
+                            string sourcePath = Path.Combine(_gameConfigDir, fileName);
+                            string destPath = Path.Combine(backupDir, fileName);
+
+                            if (File.Exists(destPath))
+                            {
+                                if (File.Exists(sourcePath)) File.Delete(sourcePath);
+                                File.Move(destPath, sourcePath);
+                            }
+                        }
+                        Directory.Delete(backupDir);
+
+                        MessageBox.Show("下载失败，已恢复原始文件", "错误",
+                                      MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"下载失败且恢复备份时出错: {ex.Message}\n" +
+                                      $"请手动从 {backupDir} 恢复文件",
+                                      "严重错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"下载失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"下载过程中发生错误: {ex.Message}",
+                              "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                RefreshFileStatus();
             }
         }
 
@@ -421,6 +528,15 @@ namespace LOLConfigCloud
         private void BtnRefreshCloud_Click(object sender, RoutedEventArgs e)
         {
             RefreshCloudFileList();
+        }
+
+        private void BtnHelp_Click(object sender, RoutedEventArgs e)
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "https://blog.kdrnn.online/archives/147/",
+                UseShellExecute = true
+            });
         }
     }
 
