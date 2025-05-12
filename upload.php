@@ -3,25 +3,29 @@ header('Content-Type: application/json; charset: utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST');
 header('Access-Control-Allow-Headers: Content-Type');
-//配置部分
-$apiKeys = [
-    'abc' => true, // 可添加多个API密钥，但除非内部使用，不建议沿用这里的方式
-    'def' => true, // (内部使用也不建议XD)
-];
-// $apiKeys = array_fill_keys(explode(',', getenv('API_KEYS')), true);
+//验证api
+$apiKey = isset($_GET['key']) ? trim($_GET['key']) : '';
+
+// 引入数据库验证（通过文件包含）
+require_once(__DIR__ . '/private/db_auth.php');
+
+if (!verifyDbCredentials($apiKey)) {
+    http_response_code(401);
+    die(json_encode(['error' => 'Invalid APIKEY']));
+}
 $baseUploadDir = 'uploads/';
 $maxFileSize = 2 * 1024 * 1024; // 2MB
 $allowedFileTypes = ['game.cfg', 'PersistedSettings.json'];
 
 // 获取请求参数
-$apiKey = isset($_GET['key']) ? trim($_GET['key']) : '';
+// $apiKey = isset($_GET['key']) ? trim($_GET['key']) : '';
 $requestedFile = isset($_GET['file']) ? trim($_GET['file']) : '';
 
-// 验证APIKEY
-if (!isset($apiKeys[$apiKey])) {
-    http_response_code(401);
-    die(json_encode(['error' => '无效的API密钥']));
-}
+// // 验证API密钥
+// if (!isset($apiKeys[$apiKey])) {
+//     http_response_code(401);
+//     die(json_encode(['error' => '无效的API密钥']));
+// }
 
 // 为用户创建专属目录
 $userUploadDir = $baseUploadDir . $apiKey . '/';
@@ -29,10 +33,10 @@ if (!file_exists($userUploadDir)) {
     mkdir($userUploadDir, 0755, true);
 }
 
-// GET请求
+// 处理GET请求（获取文件列表或者下载文件）
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     if (!empty($requestedFile)) {
-        // 下载文件
+        // 下载文件请求
         $filePath = $userUploadDir . basename($requestedFile);
         
         if (file_exists($filePath) && in_array($requestedFile, $allowedFileTypes)) {
@@ -50,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             die(json_encode(['error' => '文件不存在或不允许下载']));
         }
     } else {
-        // 获取文件列表
+        // 获取文件列表请求
         $files = [];
         if (file_exists($userUploadDir)) {
             foreach (scandir($userUploadDir) as $file) {
@@ -69,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     }
 }
 
-// POST请求
+// 处理POST请求（文件上传）
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!isset($_FILES['file'])) {
         http_response_code(400);
