@@ -1,7 +1,6 @@
 # EZcfg
-# LOL Settings Manager  
 
-//A simple way to lock LOL settings or upload them to the cloud? Change accounts without any worries!  
+A simple way to lock LOL settings or upload them to the cloud? Change accounts without any worries!  
 ​**一个简单的方式锁定LOL的设置，或是上传到云端？无所顾忌的更换账号！​**​  
 
 ---
