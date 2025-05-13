@@ -1,31 +1,25 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Management;
-using System.Net;
 using System.Net.Http;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.Windows.Input;
 using System.Diagnostics;
 using System.Security.Principal;
+using Newtonsoft.Json;
+using System.Net.Http.Headers;
 
 namespace LOLConfigCloud
 {
-
-
     public partial class App : Application
     {
         protected override void OnStartup(StartupEventArgs e)
         {
-            // 管理员权限
             if (!IsAdministrator())
             {
-                // 请求提升权限
                 var processInfo = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName)
                 {
                     Verb = "runas",
@@ -56,19 +50,32 @@ namespace LOLConfigCloud
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
     }
+
     public partial class MainWindow : Window
     {
-        private const string ServerUrl = "https://78.abc.com/upload.php";
+        private const string ServerUrl = "https://lolcfg.kdrnn.online/upload.php";
         private const string BackupExtension = ".lolcfgbak";
         private string _gameConfigDir;
         private List<CloudFileInfo> _cloudFiles = new List<CloudFileInfo>();
-        private readonly DispatcherTimer _refreshTimer;
+        //private readonly DispatcherTimer _refreshTimer;
         private readonly string[] _configFiles = { "game.cfg", "PersistedSettings.json" };
+        private DateTime _lastErrorTime = DateTime.MinValue;
+        private bool _isShowingError = false;
+
+        private readonly string _settingsPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Ezcfg",
+            "settings.json");
 
         public MainWindow()
         {
             InitializeComponent();
             Loaded += MainWindow_Loaded;
+
+            if (File.Exists(_settingsPath))
+            {
+                TxtApiKey.Text = JsonConvert.DeserializeObject<dynamic>(File.ReadAllText(_settingsPath))?.ApiKey ?? "";
+            }
 
             this.MouseLeftButtonDown += (s, e) =>
             {
@@ -77,10 +84,10 @@ namespace LOLConfigCloud
                     this.DragMove();
                 }
             };
-            //每秒三状态刷新
+
             var timer = new DispatcherTimer
             {
-                Interval = System.TimeSpan.FromSeconds(1)
+                Interval = TimeSpan.FromSeconds(1)
             };
             timer.Tick += (s, e) => {
                 _gameConfigDir = GetGameConfigDirectory();
@@ -90,8 +97,6 @@ namespace LOLConfigCloud
             timer.Start();
         }
 
-    
-
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
         {
             this.WindowState = WindowState.Minimized;
@@ -99,9 +104,10 @@ namespace LOLConfigCloud
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath));
+            File.WriteAllText(_settingsPath, JsonConvert.SerializeObject(new { ApiKey = TxtApiKey.Text }));
             this.Close();
         }
-
 
         private void RefreshTimer_Tick(object sender, EventArgs e)
         {
@@ -133,7 +139,10 @@ namespace LOLConfigCloud
                         .Replace("LeagueClient", "") + @"Game\Config";
                 }
             }
-            catch { }
+            catch
+            {
+                ShowStatusMessage("无法获取游戏路径", Brushes.Red);
+            }
             return null;
         }
 
@@ -206,32 +215,34 @@ namespace LOLConfigCloud
                 string apiKey = TxtApiKey.Text.Trim();
                 if (string.IsNullOrEmpty(apiKey))
                 {
+                    UpdateApiStatusLight(null); // 无API密钥状态
                     return;
                 }
 
                 using (var client = new HttpClient())
                 {
                     client.DefaultRequestHeaders.Add("User-Agent", "LOLConfigCloud");
-                    client.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
                     var response = await client.GetAsync($"{ServerUrl}?key={apiKey}");
                     if (response.IsSuccessStatusCode)
                     {
                         string content = await response.Content.ReadAsStringAsync();
-                        var files = System.Text.Json.JsonSerializer.Deserialize<List<CloudFileInfo>>(content);
+                        var files = JsonConvert.DeserializeObject<List<CloudFileInfo>>(content);
                         _cloudFiles = files;
                         DgCloudFiles.ItemsSource = _cloudFiles;
+                        UpdateApiStatusLight(true); // 成功状态
                     }
-                    //else
-                    //{
-                    //    string error = await response.Content.ReadAsStringAsync();//与每秒三刷冲突
-                    //    MessageBox.Show($"获取云端文件列表失败: {error}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                    //}
+                    else
+                    {
+                        string error = await response.Content.ReadAsStringAsync();
+                        UpdateApiStatusLight(false); // 失败状态
+                    }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"刷新失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                UpdateApiStatusLight(false); // 失败状态
             }
         }
 
@@ -242,13 +253,13 @@ namespace LOLConfigCloud
                 string apiKey = TxtApiKey.Text.Trim();
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    MessageBox.Show("请输入API密钥", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    ShowStatusMessage("请输入API密钥", Brushes.Red);
                     return;
                 }
 
                 if (string.IsNullOrEmpty(_gameConfigDir) || !Directory.Exists(_gameConfigDir))
                 {
-                    MessageBox.Show("未找到游戏配置目录", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    //ShowStatusMessage("未找到游戏配置目录", Brushes.Red);
                     return;
                 }
 
@@ -275,25 +286,25 @@ namespace LOLConfigCloud
                             if (response.IsSuccessStatusCode)
                             {
                                 anyUploaded = true;
+                                ShowStatusMessage($"{fileName} 上传成功", Brushes.Green);
                             }
                             else
                             {
                                 string error = await response.Content.ReadAsStringAsync();
-                                MessageBox.Show($"上传 {fileName} 失败: {error}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                                ShowStatusMessage($"{fileName} 上传失败: {error}", Brushes.Red);
                             }
                         }
                     }
 
-                    //if (anyUploaded)//上传提示消息，看喜好启用
-                    //{
-                    //    MessageBox.Show("上传操作完成", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                    //    RefreshCloudFileList();
-                    //}
+                    if (anyUploaded)
+                    {
+                        RefreshCloudFileList();
+                    }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"上传失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                ShowStatusMessage($"上传失败: {ex.Message}", Brushes.Red);
             }
         }
 
@@ -304,21 +315,20 @@ namespace LOLConfigCloud
                 string apiKey = TxtApiKey.Text.Trim();
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    MessageBox.Show("请输入API密钥", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    ShowStatusMessage("请输入API密钥", Brushes.Red);
                     return;
                 }
 
                 if (string.IsNullOrEmpty(_gameConfigDir) || !Directory.Exists(_gameConfigDir))
                 {
-                    MessageBox.Show("未找到游戏配置目录", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    //ShowStatusMessage("未找到游戏配置目录", Brushes.Red);
                     return;
                 }
-                // 1. 创建时间戳备份文件夹
+
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 string backupDir = Path.Combine(_gameConfigDir, $"Backup_{timestamp}");
                 Directory.CreateDirectory(backupDir);
 
-                // 2. 移动所有配置文件到备份文件夹
                 bool moveSuccess = true;
                 foreach (var fileName in _configFiles)
                 {
@@ -335,15 +345,13 @@ namespace LOLConfigCloud
                     catch (Exception ex)
                     {
                         moveSuccess = false;
-                        MessageBox.Show($"移动文件 {fileName} 到备份文件夹失败: {ex.Message}",
-                                      "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                        ShowStatusMessage($"备份失败: {ex.Message}", Brushes.Red);
                         break;
                     }
                 }
 
                 if (!moveSuccess)
                 {
-                    // 尝试恢复已移动的文件
                     try
                     {
                         foreach (var fileName in _configFiles)
@@ -362,7 +370,6 @@ namespace LOLConfigCloud
                     return;
                 }
 
-                // 3. 下载新配置文件
                 bool downloadSuccess = true;
                 using (var client = new HttpClient())
                 {
@@ -378,49 +385,40 @@ namespace LOLConfigCloud
 
                             if (response.IsSuccessStatusCode)
                             {
-                                // 确保目录存在
                                 Directory.CreateDirectory(Path.GetDirectoryName(filePath));
-
-                                // 使用临时文件  确保原子性写入
                                 string tempPath = filePath + ".tmp";
                                 using (var fileStream = File.Create(tempPath))
                                 {
                                     await response.Content.CopyToAsync(fileStream);
                                 }
 
-                                // 替换文件
                                 if (File.Exists(filePath)) File.Delete(filePath);
                                 File.Move(tempPath, filePath);
+                                ShowStatusMessage($"{fileName} 下载成功", Brushes.Green);
                             }
                             else
                             {
                                 downloadSuccess = false;
                                 string error = await response.Content.ReadAsStringAsync();
-                                MessageBox.Show($"下载 {fileName} 失败: {error}",
-                                              "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                                ShowStatusMessage($"{fileName} 下载失败: {error}", Brushes.Red);
                                 break;
                             }
                         }
                         catch (Exception ex)
                         {
                             downloadSuccess = false;
-                            MessageBox.Show($"下载 {fileName} 失败: {ex.Message}",
-                                          "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                            ShowStatusMessage($"{fileName} 下载失败: {ex.Message}", Brushes.Red);
                             break;
                         }
                     }
                 }
 
-                // 4. 处理结果
                 if (downloadSuccess)
                 {
-                    MessageBox.Show("所有配置文件下载成功！\n" +
-                                  $"原始文件已备份到: {backupDir}",
-                                  "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    ShowStatusMessage("所有文件下载成功", Brushes.Green);
                 }
                 else
                 {
-                    // 下载失败就恢复备份
                     try
                     {
                         foreach (var fileName in _configFiles)
@@ -435,22 +433,17 @@ namespace LOLConfigCloud
                             }
                         }
                         Directory.Delete(backupDir);
-
-                        MessageBox.Show("下载失败，已恢复原始文件", "错误",
-                                      MessageBoxButton.OK, MessageBoxImage.Error);
+                        ShowStatusMessage("已恢复原始文件", Brushes.Orange);
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show($"下载失败且恢复备份时出错: {ex.Message}\n" +
-                                      $"请手动从 {backupDir} 恢复文件",
-                                      "严重错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                        ShowStatusMessage($"恢复备份失败，请手动恢复: {backupDir}", Brushes.Red);
                     }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"下载过程中发生错误: {ex.Message}",
-                              "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                ShowStatusMessage($"下载失败: {ex.Message}", Brushes.Red);
             }
             finally
             {
@@ -458,30 +451,11 @@ namespace LOLConfigCloud
             }
         }
 
-        private void RestoreBackups(Dictionary<string, string> backupFiles)
-        {
-            foreach (var kvp in backupFiles)
-            {
-                try
-                {
-                    if (File.Exists(kvp.Key))
-                    {
-                        File.Delete(kvp.Key);
-                    }
-                    if (File.Exists(kvp.Value))
-                    {
-                        File.Move(kvp.Value, kvp.Key);
-                    }
-                }
-                catch { }
-            }
-        }
-
         private void SetFilesReadOnly(bool readOnly)
         {
             if (string.IsNullOrEmpty(_gameConfigDir) || !Directory.Exists(_gameConfigDir))
             {
-                MessageBox.Show("未找到游戏配置目录", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                //ShowStatusMessage("未找到游戏配置目录", Brushes.Red);
                 return;
             }
 
@@ -502,10 +476,11 @@ namespace LOLConfigCloud
                     }
                 }
                 RefreshFileStatus();
+                ShowStatusMessage(readOnly ? "文件已锁定" : "文件已解锁", Brushes.Green);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"操作失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                ShowStatusMessage($"操作失败: {ex.Message}", Brushes.Red);
             }
         }
 
@@ -538,6 +513,42 @@ namespace LOLConfigCloud
                 UseShellExecute = true
             });
         }
+
+        private void ShowStatusMessage(string message, Brush color)
+        {
+
+            Dispatcher.Invoke(() =>
+            {
+                StatusText.Text = message;
+                StatusText.Foreground = color;
+                _lastErrorTime = DateTime.Now;
+                _isShowingError = color == Brushes.Red;
+            });
+        }
+
+        private void UpdateApiStatusLight(bool? status)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                switch (status)
+                {
+                    case true: // 成功
+                        ApiStatusLight.Background = Brushes.LimeGreen;
+                        ApiStatusLight.ToolTip = "云端连接正常";
+                        break;
+                    case false: // 失败
+                        ApiStatusLight.Background = Brushes.Red;
+                        ApiStatusLight.ToolTip = "云端连接失败";
+                        break;
+                    default: // 无API密钥
+                        ApiStatusLight.Background = Brushes.LightGray;
+                        ApiStatusLight.ToolTip = "请输入API密钥";
+                        break;
+                }
+            });
+        }
+
+
     }
 
     public class CloudFileInfo
