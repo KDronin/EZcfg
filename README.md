@@ -24,9 +24,3 @@ A simple way to lock LOL settings or upload them to the cloud? Change accounts w
    - *Client*: Build the XAML project, then update the server URL. Alternatively, you can download directly from the release, but server stability is not guaranteed.  
 2. ​**服务端**​：部署 `upload.php` 到你的服务器，替换 `APIKEY` 的实现方法（或是直接用）。  
    - *Server*: Deploy upload.php to your server and replace the APIKEY implementation(or not).  
-
----
-
-## ❓ 支持 / Support  
-​**小型易用项目**，如果仍有问题，也欢迎提交issues！  
-*This is a very simple small project. If you encounter any issues, feel free to submit them!*  
