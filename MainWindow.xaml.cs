@@ -509,7 +509,7 @@ namespace LOLConfigCloud
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = "https://blog.kdrnn.online/archives/147/",
+                FileName = "https://www.baidu.com",
                 UseShellExecute = true
             });
         }
